@@ -126,6 +126,11 @@ impl UiState {
         self.filtered_indices.get(self.cursor).copied()
     }
 
+    /// Get current session reference
+    pub fn get_current_session(&self) -> Option<&Session> {
+        self.current_session_index().map(|idx| &self.sessions[idx])
+    }
+
     /// Move cursor up
     pub fn cursor_up(&mut self) {
         if self.cursor > 0 {

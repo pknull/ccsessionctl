@@ -11,7 +11,8 @@ use ratatui::{
     },
     Frame,
 };
-use std::io;
+use std::io::{self, Write};
+use std::process::{Command, Stdio};
 
 use super::highlight::{parse_code_blocks, CodeBlockInfo, Highlighter};
 use super::state::{DialogAction, UiState, View};
@@ -26,6 +27,32 @@ fn format_tokens(tokens: usize) -> String {
     } else {
         tokens.to_string()
     }
+}
+
+fn copy_to_clipboard(text: &str) -> bool {
+    // Try xclip first (X11), then xsel, then wl-copy (Wayland)
+    let commands = [
+        ("xclip", vec!["-selection", "clipboard"]),
+        ("xsel", vec!["--clipboard", "--input"]),
+        ("wl-copy", vec![]),
+    ];
+
+    for (cmd, args) in &commands {
+        if let Ok(mut child) = Command::new(cmd)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                if stdin.write_all(text.as_bytes()).is_ok() {
+                    return child.wait().map(|s| s.success()).unwrap_or(false);
+                }
+            }
+        }
+    }
+    false
 }
 
 pub struct App {
@@ -235,6 +262,26 @@ impl App {
             KeyCode::Char('o') => {
                 self.state.toggle_sort_direction();
                 self.table_state.select(Some(self.state.cursor));
+            }
+            KeyCode::Char('y') => {
+                if let Some(session) = self.state.get_current_session() {
+                    let id = session.id.clone();
+                    if copy_to_clipboard(&id) {
+                        self.state.set_status(format!("Copied: {}", id));
+                    } else {
+                        self.state.set_status("Failed to copy (xclip not found?)".to_string());
+                    }
+                }
+            }
+            KeyCode::Char('Y') => {
+                if let Some(session) = self.state.get_current_session() {
+                    let path = session.path.display().to_string();
+                    if copy_to_clipboard(&path) {
+                        self.state.set_status(format!("Copied path: {}", path));
+                    } else {
+                        self.state.set_status("Failed to copy (xclip not found?)".to_string());
+                    }
+                }
             }
             _ => {}
         }
@@ -916,6 +963,10 @@ impl App {
             "  p               Cycle project filter",
             "  s               Cycle sort (date/size/project/name)",
             "  o               Toggle sort order",
+            "",
+            "  Clipboard",
+            "  y               Copy session ID",
+            "  Y               Copy session path",
             "",
             "  Actions",
             "  d               Delete selected",
