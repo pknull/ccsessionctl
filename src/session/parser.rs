@@ -4,8 +4,8 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use super::types::{
-    AssistantRecord, DisplayMessage, MessageRole, Session, SessionRecord, SummaryRecord,
-    UserRecord,
+    AssistantRecord, CustomTitleRecord, DisplayMessage, MessageRole, Session, SessionRecord,
+    SummaryRecord, UserRecord,
 };
 
 /// Load metadata from a session file (full scan for search indexing)
@@ -17,6 +17,7 @@ pub fn load_session_metadata(session: &mut Session) -> Result<()> {
     let mut first_timestamp = None;
     let mut first_user_message = None;
     let mut summary = None;
+    let mut custom_title = None;
     let mut message_count = 0;
     let mut all_content = Vec::new();
     let mut total_chars = 0usize;
@@ -41,6 +42,9 @@ pub fn load_session_metadata(session: &mut Session) -> Result<()> {
                 all_content.push(s.clone());
                 total_chars += s.len();
                 summary = Some(s);
+            }
+            SessionRecord::CustomTitle(CustomTitleRecord { custom_title: t }) => {
+                custom_title = Some(t);
             }
             SessionRecord::User(UserRecord {
                 timestamp,
@@ -78,6 +82,7 @@ pub fn load_session_metadata(session: &mut Session) -> Result<()> {
     session.created = first_timestamp;
     session.summary = summary;
     session.first_message = first_user_message;
+    session.custom_title = custom_title;
     session.message_count = Some(message_count);
     session.search_content = Some(all_content.join(" ").to_lowercase());
     // Rough token estimate: ~4 chars per token
@@ -168,8 +173,12 @@ fn truncate_message(s: &str, max_chars: usize) -> String {
     }
 }
 
-/// Get a preview of the session (summary or first message)
+/// Get a preview of the session (custom title, summary, or first message)
 pub fn get_session_preview(session: &Session) -> String {
+    // Custom title takes priority (set via /rename command)
+    if let Some(ref title) = session.custom_title {
+        return truncate_message(title, 50);
+    }
     if let Some(ref summary) = session.summary {
         return truncate_message(summary, 50);
     }

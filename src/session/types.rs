@@ -43,6 +43,8 @@ pub struct Session {
     pub message_count: Option<usize>,
     pub is_agent: bool,
     pub has_directory: bool,
+    /// User-provided session name via /rename command
+    pub custom_title: Option<String>,
     /// Full searchable content (all messages concatenated)
     pub search_content: Option<String>,
     /// Token count estimate
@@ -75,6 +77,7 @@ impl Session {
             message_count: None,
             is_agent,
             has_directory,
+            custom_title: None,
             search_content: None,
             token_count: None,
         }
@@ -86,6 +89,7 @@ impl Session {
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum SessionRecord {
     Summary(SummaryRecord),
+    CustomTitle(CustomTitleRecord),
     FileHistorySnapshot(FileHistorySnapshot),
     User(UserRecord),
     Assistant(AssistantRecord),
@@ -100,6 +104,12 @@ pub struct SummaryRecord {
     pub summary: String,
     #[serde(rename = "leafUuid")]
     pub leaf_uuid: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CustomTitleRecord {
+    #[serde(rename = "customTitle")]
+    pub custom_title: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
