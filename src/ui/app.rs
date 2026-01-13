@@ -18,6 +18,16 @@ use super::state::{DialogAction, UiState, View};
 use crate::actions;
 use crate::session::{get_session_preview, load_session_messages, load_session_metadata};
 
+fn format_tokens(tokens: usize) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{:.1}K", tokens as f64 / 1_000.0)
+    } else {
+        tokens.to_string()
+    }
+}
+
 pub struct App {
     pub state: UiState,
     pub should_quit: bool,
@@ -626,7 +636,7 @@ impl App {
     }
 
     fn draw_session_table(&mut self, f: &mut Frame, area: Rect) {
-        let header_cells = ["", "Project", "Date", "Size", "Preview"]
+        let header_cells = ["", "Project", "Date", "Size", "Tokens", "Preview"]
             .iter()
             .map(|h| Cell::from(*h).style(Style::default().add_modifier(Modifier::BOLD)));
         let header = Row::new(header_cells).height(1);
@@ -644,6 +654,10 @@ impl App {
                 let project = &session.project;
                 let date = session.modified.format("%b %d").to_string();
                 let size = humansize::format_size(session.size_bytes, humansize::BINARY);
+                let tokens = session
+                    .token_count
+                    .map(|t| format_tokens(t))
+                    .unwrap_or_else(|| "-".to_string());
                 let preview = get_session_preview(session);
 
                 let style = if row_idx == self.state.cursor {
@@ -661,6 +675,7 @@ impl App {
                     Cell::from(project.as_str()),
                     Cell::from(date),
                     Cell::from(size),
+                    Cell::from(tokens),
                     Cell::from(preview),
                 ])
                 .style(style)
@@ -670,6 +685,7 @@ impl App {
         let widths = [
             Constraint::Length(2),
             Constraint::Length(15),
+            Constraint::Length(8),
             Constraint::Length(8),
             Constraint::Length(8),
             Constraint::Min(20),
