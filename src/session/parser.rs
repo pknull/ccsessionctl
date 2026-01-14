@@ -173,24 +173,52 @@ fn truncate_message(s: &str, max_chars: usize) -> String {
     }
 }
 
-/// Get a preview of the session (custom title, summary, or first message)
+/// Get a preview of the session (custom title, first message, or summary)
 pub fn get_session_preview(session: &Session) -> String {
     // Custom title takes priority (set via /rename command)
     if let Some(ref title) = session.custom_title {
         return truncate_message(title, 50);
     }
-    if let Some(ref summary) = session.summary {
-        return truncate_message(summary, 50);
-    }
+    // First message is more predictable than summary (summaries can be stale)
     if let Some(ref msg) = session.first_message {
         return truncate_message(msg, 50);
     }
-    "(empty)".to_string()
+    if let Some(ref summary) = session.summary {
+        return truncate_message(summary, 50);
+    }
+
+    // Fallback: show message count if available
+    if let Some(count) = session.message_count {
+        if count > 0 {
+            return format!("[{} message{}]", count, if count == 1 { "" } else { "s" });
+        }
+    }
+
+    // Last resort: show truncated session ID
+    let short_id = if session.id.len() > 12 {
+        format!("{}...", &session.id[..12])
+    } else {
+        session.id.clone()
+    };
+    format!("[{}]", short_id)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use std::path::PathBuf;
+
+    fn make_test_session() -> Session {
+        Session::new(
+            "abc123def456".to_string(),
+            "test-project".to_string(),
+            "-home-user-test-project".to_string(),
+            PathBuf::from("/tmp/test.jsonl"),
+            1024,
+            Utc::now(),
+        )
+    }
 
     #[test]
     fn test_truncate_message() {
@@ -202,5 +230,58 @@ mod tests {
     #[test]
     fn test_truncate_with_newlines() {
         assert_eq!(truncate_message("line1\nline2", 20), "line1 line2");
+    }
+
+    #[test]
+    fn test_preview_custom_title_priority() {
+        let mut session = make_test_session();
+        session.custom_title = Some("My Custom Title".to_string());
+        session.summary = Some("Summary text".to_string());
+        session.first_message = Some("First message".to_string());
+        assert_eq!(get_session_preview(&session), "My Custom Title");
+    }
+
+    #[test]
+    fn test_preview_first_message_priority() {
+        // First message now takes priority over summary
+        let mut session = make_test_session();
+        session.summary = Some("Summary text".to_string());
+        session.first_message = Some("First message".to_string());
+        assert_eq!(get_session_preview(&session), "First message");
+    }
+
+    #[test]
+    fn test_preview_summary_fallback() {
+        // Summary is used when no first_message
+        let mut session = make_test_session();
+        session.summary = Some("Summary text".to_string());
+        assert_eq!(get_session_preview(&session), "Summary text");
+    }
+
+    #[test]
+    fn test_preview_message_count_fallback() {
+        let mut session = make_test_session();
+        session.message_count = Some(5);
+        assert_eq!(get_session_preview(&session), "[5 messages]");
+    }
+
+    #[test]
+    fn test_preview_message_count_singular() {
+        let mut session = make_test_session();
+        session.message_count = Some(1);
+        assert_eq!(get_session_preview(&session), "[1 message]");
+    }
+
+    #[test]
+    fn test_preview_session_id_fallback() {
+        let session = make_test_session();
+        assert_eq!(get_session_preview(&session), "[abc123def456]");
+    }
+
+    #[test]
+    fn test_preview_long_session_id_truncated() {
+        let mut session = make_test_session();
+        session.id = "abcdefghijklmnopqrstuvwxyz".to_string();
+        assert_eq!(get_session_preview(&session), "[abcdefghijkl...]");
     }
 }

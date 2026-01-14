@@ -186,7 +186,32 @@ impl MessageContent {
     /// Check if content starts with system tags (not real user input)
     pub fn is_system_content(&self) -> bool {
         let text = self.as_text();
-        text.starts_with('<') || text.is_empty()
+        if text.is_empty() {
+            return true;
+        }
+
+        // Check for known system tag patterns injected by Claude Code
+        const SYSTEM_TAGS: &[&str] = &[
+            "<system-reminder>",
+            "<system>",
+            "<context>",
+            "<env>",
+            "<claude_background_info>",
+            "<user_privacy>",
+            "<critical_",
+            "<injection_",
+            "<meta_safety",
+            "<social_engineering",
+            "<mandatory_",
+            "<copyright_",
+            "<download_",
+            "<harmful_",
+            "<action_types>",
+            "<claudeMd>",
+        ];
+
+        let text_lower = text.to_lowercase();
+        SYSTEM_TAGS.iter().any(|tag| text_lower.starts_with(tag))
     }
 }
 
@@ -294,4 +319,60 @@ pub enum MessageRole {
     User,
     Assistant,
     System,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_system_content_empty() {
+        let content = MessageContent::Text(String::new());
+        assert!(content.is_system_content());
+    }
+
+    #[test]
+    fn test_is_system_content_system_reminder() {
+        let content = MessageContent::Text("<system-reminder>hook success</system-reminder>".to_string());
+        assert!(content.is_system_content());
+    }
+
+    #[test]
+    fn test_is_system_content_context_tag() {
+        let content = MessageContent::Text("<context>some context here</context>".to_string());
+        assert!(content.is_system_content());
+    }
+
+    #[test]
+    fn test_is_system_content_regular_user_message() {
+        let content = MessageContent::Text("Hello, can you help me with this code?".to_string());
+        assert!(!content.is_system_content());
+    }
+
+    #[test]
+    fn test_is_system_content_html_from_user() {
+        // User pasting HTML should NOT be treated as system content
+        let content = MessageContent::Text("<html><body>test</body></html>".to_string());
+        assert!(!content.is_system_content());
+    }
+
+    #[test]
+    fn test_is_system_content_xml_from_user() {
+        // User pasting XML should NOT be treated as system content
+        let content = MessageContent::Text("<config><setting>value</setting></config>".to_string());
+        assert!(!content.is_system_content());
+    }
+
+    #[test]
+    fn test_is_system_content_angle_bracket_text() {
+        // Casual use of < should NOT be treated as system content
+        let content = MessageContent::Text("< 5 means less than five".to_string());
+        assert!(!content.is_system_content());
+    }
+
+    #[test]
+    fn test_is_system_content_case_insensitive() {
+        let content = MessageContent::Text("<SYSTEM-REMINDER>test</SYSTEM-REMINDER>".to_string());
+        assert!(content.is_system_content());
+    }
 }

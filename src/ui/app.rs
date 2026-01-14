@@ -29,6 +29,13 @@ fn format_tokens(tokens: usize) -> String {
     }
 }
 
+/// Decode project path from Claude's directory encoding
+/// e.g., "-home-pknull-dotfiles" -> "/home/pknull/dotfiles"
+fn decode_project_path(raw_name: &str) -> String {
+    let path = raw_name.strip_prefix('-').unwrap_or(raw_name);
+    format!("/{}", path.replace('-', "/"))
+}
+
 fn copy_to_clipboard(text: &str) -> bool {
     // Try xclip first (X11), then xsel, then wl-copy (Wayland)
     let commands = [
@@ -58,6 +65,7 @@ fn copy_to_clipboard(text: &str) -> bool {
 pub struct App {
     pub state: UiState,
     pub should_quit: bool,
+    needs_refresh: bool,
     table_state: TableState,
     highlighter: Highlighter,
     code_blocks: Vec<CodeBlockInfo>,
@@ -71,6 +79,7 @@ impl App {
         Self {
             state,
             should_quit: false,
+            needs_refresh: false,
             table_state,
             highlighter: Highlighter::new(),
             code_blocks: Vec::new(),
@@ -84,6 +93,12 @@ impl App {
         while !self.should_quit {
             terminal.draw(|f| self.draw(f))?;
             self.handle_events()?;
+
+            // Handle refresh with terminal access for progress display
+            if self.needs_refresh {
+                self.needs_refresh = false;
+                self.do_refresh(terminal)?;
+            }
         }
 
         Ok(())
@@ -253,7 +268,7 @@ impl App {
                 self.do_archive();
             }
             KeyCode::Char('r') => {
-                self.refresh_sessions();
+                self.needs_refresh = true;
             }
             KeyCode::Char('s') => {
                 self.state.cycle_sort_field();
@@ -265,9 +280,10 @@ impl App {
             }
             KeyCode::Char('y') => {
                 if let Some(session) = self.state.get_current_session() {
-                    let id = session.id.clone();
-                    if copy_to_clipboard(&id) {
-                        self.state.set_status(format!("Copied: {}", id));
+                    let project_dir = decode_project_path(&session.project_raw);
+                    let cmd = format!("cd {} && claude --resume {}", project_dir, session.id);
+                    if copy_to_clipboard(&cmd) {
+                        self.state.set_status(format!("Copied: {}", cmd));
                     } else {
                         self.state.set_status("Failed to copy (xclip not found?)".to_string());
                     }
@@ -589,18 +605,39 @@ impl App {
         }
     }
 
-    fn refresh_sessions(&mut self) {
+    fn do_refresh(&mut self, terminal: &mut ratatui::Terminal<impl Backend>) -> Result<()> {
         match crate::session::scan_sessions() {
             Ok(sessions) => {
+                let total = sessions.len();
                 self.state = UiState::new(sessions);
-                self.load_all_metadata_sync();
                 self.table_state.select(Some(0));
-                self.state.set_status("Refreshed session list".to_string());
+
+                // Load all metadata with progress display
+                for (i, session) in self.state.sessions.iter_mut().enumerate() {
+                    if session.first_message.is_none() {
+                        let _ = load_session_metadata(session);
+                    }
+
+                    // Update progress display
+                    if i % 20 == 0 || i == total - 1 {
+                        terminal.draw(|f| {
+                            let area = f.size();
+                            let msg = format!("Refreshing... {}/{}", i + 1, total);
+                            let paragraph = ratatui::widgets::Paragraph::new(msg)
+                                .style(ratatui::style::Style::default().fg(ratatui::style::Color::Cyan))
+                                .alignment(ratatui::layout::Alignment::Center);
+                            f.render_widget(paragraph, area);
+                        })?;
+                    }
+                }
+
+                self.state.set_status(format!("Refreshed: {} sessions", total));
             }
             Err(e) => {
                 self.state.set_status(format!("Refresh failed: {}", e));
             }
         }
+        Ok(())
     }
 
     fn draw(&mut self, f: &mut Frame) {
@@ -777,18 +814,16 @@ impl App {
             Span::raw(":Nav "),
             Span::styled("Space", Style::default().fg(Color::Cyan)),
             Span::raw(":Sel "),
-            Span::styled("Enter", Style::default().fg(Color::Cyan)),
-            Span::raw(":View "),
-            Span::styled("/", Style::default().fg(Color::Cyan)),
-            Span::raw(":Search "),
+            Span::styled("p", Style::default().fg(Color::Cyan)),
+            Span::raw(":Project "),
+            Span::styled("s", Style::default().fg(Color::Cyan)),
+            Span::raw(":Sort "),
             Span::styled("d", Style::default().fg(Color::Cyan)),
             Span::raw(":Del "),
             Span::styled("e", Style::default().fg(Color::Cyan)),
             Span::raw(":Export "),
-            Span::styled("z", Style::default().fg(Color::Cyan)),
-            Span::raw(":Archive "),
-            Span::styled("?", Style::default().fg(Color::Cyan)),
-            Span::raw(":Help "),
+            Span::styled("r", Style::default().fg(Color::Cyan)),
+            Span::raw(":Refresh "),
             Span::styled("q", Style::default().fg(Color::Cyan)),
             Span::raw(":Quit"),
         ]);
@@ -965,7 +1000,7 @@ impl App {
             "  o               Toggle sort order",
             "",
             "  Clipboard",
-            "  y               Copy session ID",
+            "  y               Copy resume command",
             "  Y               Copy session path",
             "",
             "  Actions",

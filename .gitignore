@@ -1,1 +1,7 @@
 /target
+
+# Asha memory framework
+.asha/
+Memory/sessions/
+Memory/vector_db/
+Memory/reasoning_bank/

@@ -190,11 +190,14 @@ fn main() -> Result<()> {
     if cli.prune_empty {
         let mut empty_sessions = Vec::new();
 
-        // Find all empty sessions
+        // Find all empty sessions (sessions with 0 messages)
         for session in &mut sessions {
             let _ = load_session_metadata(session);
-            let preview = get_session_preview(session);
-            if preview == "(empty)" {
+            let is_empty = session.message_count.map(|c| c == 0).unwrap_or(false)
+                && session.summary.is_none()
+                && session.first_message.is_none()
+                && session.custom_title.is_none();
+            if is_empty {
                 empty_sessions.push(session.clone());
             }
         }
