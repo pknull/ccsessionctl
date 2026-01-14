@@ -661,13 +661,13 @@ impl App {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3), // Header + filter
+                Constraint::Length(1), // Filter bar only
                 Constraint::Min(5),    // Table
-                Constraint::Length(2), // Status + keybinds
+                Constraint::Length(1), // Single line footer
             ])
             .split(area);
 
-        // Header
+        // Filter bar
         self.draw_header(f, chunks[0]);
 
         // Session table
@@ -678,45 +678,32 @@ impl App {
     }
 
     fn draw_header(&mut self, f: &mut Frame, area: Rect) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Length(2)])
-            .split(area);
-
-        // Title
-        let title = Paragraph::new("ccsessionctl - Claude Code Session Manager")
-            .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
-        f.render_widget(title, chunks[0]);
-
-        // Filter bar
         let filter_text = if self.state.view == View::Search {
-            format!("Filter: [{}▏]", self.state.filter.query)
+            format!("[{}▏]", self.state.filter.query)
         } else if self.state.filter.query.is_empty() {
-            "Filter: [/]".to_string()
+            "[/]".to_string()
         } else {
-            format!("Filter: [{}]", self.state.filter.query)
+            format!("[{}]", self.state.filter.query)
         };
 
-        let project_text = format!("Project: [{}]", self.state.current_project_filter());
+        let project_text = format!("[{}]", self.state.current_project_filter());
         let sort_arrow = if self.state.sort_reversed { "↑" } else { "↓" };
-        let sort_text = format!("Sort: [{}{}]", self.state.sort_field.as_str(), sort_arrow);
+        let sort_text = format!("[{}{}]", self.state.sort_field.as_str(), sort_arrow);
 
         let filter_line = Line::from(vec![
             Span::raw(filter_text),
-            Span::raw("  "),
+            Span::raw(" "),
             Span::styled(project_text, Style::default().fg(Color::Yellow)),
-            Span::raw("  "),
+            Span::raw(" "),
             Span::styled(sort_text, Style::default().fg(Color::Magenta)),
             Span::raw(format!(
-                "  ({}/{})",
+                " ({}/{})",
                 self.state.filtered_indices.len(),
                 self.state.sessions.len()
             )),
         ]);
 
-        let filter_bar = Paragraph::new(filter_line)
-            .block(Block::default().borders(Borders::BOTTOM));
-        f.render_widget(filter_bar, chunks[1]);
+        f.render_widget(Paragraph::new(filter_line), area);
     }
 
     fn draw_session_table(&mut self, f: &mut Frame, area: Rect) {
@@ -777,57 +764,27 @@ impl App {
 
         let table = Table::new(rows, widths)
             .header(header)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!(
-                        " Sessions {}",
-                        if !self.state.selected.is_empty() {
-                            format!("({} selected)", self.state.selected.len())
-                        } else {
-                            String::new()
-                        }
-                    )),
-            )
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
         f.render_stateful_widget(table, area, &mut self.table_state);
     }
 
     fn draw_footer(&self, f: &mut Frame, area: Rect) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Length(1)])
-            .split(area);
-
-        // Status line
-        let status = if let Some(ref msg) = self.state.status_message {
-            Span::styled(msg.as_str(), Style::default().fg(Color::Green))
+        // Single line: status message OR keybinds hint
+        let content = if let Some(ref msg) = self.state.status_message {
+            Line::from(Span::styled(msg.as_str(), Style::default().fg(Color::Green)))
+        } else if !self.state.selected.is_empty() {
+            Line::from(Span::styled(
+                format!("{} selected", self.state.selected.len()),
+                Style::default().fg(Color::Yellow),
+            ))
         } else {
-            Span::raw("")
+            Line::from(Span::styled(
+                "?:help",
+                Style::default().fg(Color::DarkGray),
+            ))
         };
-        f.render_widget(Paragraph::new(status), chunks[0]);
-
-        // Keybinds
-        let keybinds = Line::from(vec![
-            Span::styled("j/k", Style::default().fg(Color::Cyan)),
-            Span::raw(":Nav "),
-            Span::styled("Space", Style::default().fg(Color::Cyan)),
-            Span::raw(":Sel "),
-            Span::styled("p", Style::default().fg(Color::Cyan)),
-            Span::raw(":Project "),
-            Span::styled("s", Style::default().fg(Color::Cyan)),
-            Span::raw(":Sort "),
-            Span::styled("d", Style::default().fg(Color::Cyan)),
-            Span::raw(":Del "),
-            Span::styled("e", Style::default().fg(Color::Cyan)),
-            Span::raw(":Export "),
-            Span::styled("r", Style::default().fg(Color::Cyan)),
-            Span::raw(":Refresh "),
-            Span::styled("q", Style::default().fg(Color::Cyan)),
-            Span::raw(":Quit"),
-        ]);
-        f.render_widget(Paragraph::new(keybinds), chunks[1]);
+        f.render_widget(Paragraph::new(content), area);
     }
 
     fn draw_preview_view(&mut self, f: &mut Frame, area: Rect) {

@@ -1,9 +1,9 @@
 ---
-version: "1.1"
+version: "1.2"
 lastUpdated: "2026-01-14 UTC"
 lifecycle: "active"
 stakeholder: "all"
-changeTrigger: "Session save - TUI improvements"
+changeTrigger: "Session save - Minimal UI chrome"
 validatedBy: "user"
 dependencies: ["communicationStyle.md"]
 ---
@@ -15,11 +15,17 @@ dependencies: ["communicationStyle.md"]
 **Primary Focus**: TUI session manager for Claude Code sessions
 
 **Active Work**:
-- Preview display improvements
-- UX refinements for session navigation
+- UI polish for terminal multiplexer usage
+- Maximizing content area
 
 **Recent Activities** (last 7 days):
-- **2026-01-14**: Major TUI improvements session
+- **2026-01-14 (session 2)**: Minimal UI chrome
+  - Removed title line
+  - Removed table borders
+  - Condensed footer to single contextual line (status/selection/"?:help")
+  - Reduced chrome from ~7 lines to 2 lines
+
+- **2026-01-14 (session 1)**: Major TUI improvements
   - Fixed preview fallback chain: custom_title → first_message → summary → message count → session ID
   - Smarter system content detection (specific tags, not all `<` prefixes)
   - Enhanced yank (`y`) to include `cd` to project directory
@@ -41,8 +47,8 @@ dependencies: ["communicationStyle.md"]
 ## Next Steps
 
 **Immediate**:
-- [ ] Test all changes with real session data
-- [ ] Consider adding configurable preview priority
+- [ ] Test minimal UI with real usage
+- [ ] Consider `--compact` flag if user wants toggle
 
 **Deferred**:
-- Preserve sort/filter state across refresh (user declined for now)
+- Preserve sort/filter state across refresh (user declined)
