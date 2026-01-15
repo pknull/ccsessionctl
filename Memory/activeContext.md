@@ -1,9 +1,9 @@
 ---
-version: "1.2"
-lastUpdated: "2026-01-14 UTC"
+version: "1.3"
+lastUpdated: "2026-01-15 UTC"
 lifecycle: "active"
 stakeholder: "all"
-changeTrigger: "Session save - Minimal UI chrome"
+changeTrigger: "Session save - xclip blocking fix"
 validatedBy: "user"
 dependencies: ["communicationStyle.md"]
 ---
@@ -19,6 +19,11 @@ dependencies: ["communicationStyle.md"]
 - Maximizing content area
 
 **Recent Activities** (last 7 days):
+- **2026-01-15**: Fixed xclip clipboard blocking
+  - Root cause: `child.wait()` blocked on xclip which waits for paste event
+  - Fix: Don't wait for clipboard tool to exit, just write and move on
+  - Process diagnosed via `/proc/{pid}/wchan` showing `do_wait` state
+
 - **2026-01-14 (session 2)**: Minimal UI chrome
   - Removed title line
   - Removed table borders
@@ -47,7 +52,8 @@ dependencies: ["communicationStyle.md"]
 ## Next Steps
 
 **Immediate**:
-- [ ] Test minimal UI with real usage
+- [x] Test minimal UI with real usage
+- [x] Fix clipboard yank functionality
 - [ ] Consider `--compact` flag if user wants toggle
 
 **Deferred**:

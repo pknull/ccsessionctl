@@ -54,7 +54,8 @@ fn copy_to_clipboard(text: &str) -> bool {
         {
             if let Some(mut stdin) = child.stdin.take() {
                 if stdin.write_all(text.as_bytes()).is_ok() {
-                    return child.wait().map(|s| s.success()).unwrap_or(false);
+                    drop(stdin); // Close stdin so clipboard tool knows we're done
+                    return true; // Don't wait - clipboard tool runs in background
                 }
             }
         }

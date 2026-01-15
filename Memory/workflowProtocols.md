@@ -1,9 +1,9 @@
 ---
-version: "1.0"
-lastUpdated: "YYYY-MM-DD UTC"
-lifecycle: "initiation"
+version: "1.1"
+lastUpdated: "2026-01-15 UTC"
+lifecycle: "active"
 stakeholder: "technical"
-changeTrigger: "Initial template creation"
+changeTrigger: "Added Linux process debugging pattern"
 validatedBy: "user"
 dependencies: ["activeContext.md", "techEnvironment.md"]
 ---
@@ -61,11 +61,24 @@ dependencies: ["activeContext.md", "techEnvironment.md"]
 
 ## Validated Patterns
 
-[Document patterns that have proven effective in this project]
+### Linux Process Freeze Debugging
 
-### [Pattern Name]
+**When to Use**: Application appears frozen/unresponsive
+**Process**:
+1. `pgrep -a <name>` - Find PID
+2. `cat /proc/{pid}/wchan` - What kernel function is it waiting in
+3. `pstree -p {pid}` - Show child process tree
+4. `ls -la /proc/{pid}/fd/` - Check open file descriptors
 
-**When to Use**: [Conditions]
-**Process**: [Steps]
-**Why This Works**: [Explanation]
-**Anti-Pattern**: [What to avoid]
+**Why This Works**: `wchan` reveals if process is in `do_wait` (waiting on child), `poll_schedule` (waiting on I/O), etc. Child tree shows what subprocess might be blocking.
+
+**Anti-Pattern**: Blindly killing processes without diagnosing—loses the learning opportunity.
+
+### Clipboard Tools (xclip/xsel) Behavior
+
+**When to Use**: Calling clipboard tools from applications
+**Process**: Don't call `child.wait()` after writing to stdin—clipboard tools may wait for paste event before exiting.
+
+**Why This Works**: `xclip` by default stays alive to serve the clipboard selection. Waiting blocks the caller indefinitely.
+
+**Anti-Pattern**: `child.wait().map(|s| s.success())` after clipboard write.
