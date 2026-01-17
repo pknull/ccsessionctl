@@ -1,9 +1,9 @@
 ---
-version: "1.1"
-lastUpdated: "2026-01-15 UTC"
+version: "1.2"
+lastUpdated: "2026-01-17 UTC"
 lifecycle: "active"
 stakeholder: "technical"
-changeTrigger: "Added Linux process debugging pattern"
+changeTrigger: "Added path encoding and UTF-8 truncation patterns"
 validatedBy: "user"
 dependencies: ["activeContext.md", "techEnvironment.md"]
 ---
@@ -82,3 +82,34 @@ dependencies: ["activeContext.md", "techEnvironment.md"]
 **Why This Works**: `xclip` by default stays alive to serve the clipboard selection. Waiting blocks the caller indefinitely.
 
 **Anti-Pattern**: `child.wait().map(|s| s.success())` after clipboard write.
+
+### Path Encoding Ambiguity in Claude Projects
+
+**When to Use**: Decoding Claude's encoded project paths (`-home-user-my-project`)
+**Problem**: Claude replaces `/` with `-`, making project names with dashes ambiguous.
+
+**Solution**: Use heuristic based on known parent directories:
+1. Identify known container dirs (Code, Projects, Development, repos, etc.)
+2. Everything after a container dir is treated as the project name with dashes preserved
+3. Fallback: treat last segment as project name
+
+**Why This Works**: Users typically organize projects under recognizable parent directories. After seeing "Code" or "Projects", remaining segments form the project name.
+
+**Anti-Pattern**: `raw_name.replace('-', '/')` globally—corrupts project names containing dashes.
+
+### UTF-8 Safe String Truncation
+
+**When to Use**: Truncating strings for display
+**Problem**: Byte slicing (`&s[..n]`) panics on multi-byte UTF-8 boundaries.
+
+**Solution**: Use `.chars().take(n).collect()` instead of byte slicing.
+
+```rust
+// WRONG - panics on UTF-8
+&s[..max - 3]
+
+// CORRECT - handles UTF-8
+s.chars().take(max.saturating_sub(3)).collect::<String>()
+```
+
+**Anti-Pattern**: Using byte indices for string truncation in any user-facing display.
