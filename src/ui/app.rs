@@ -6,12 +6,11 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Scrollbar,
-        ScrollbarOrientation, ScrollbarState, Table, TableState, Wrap,
+        Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, TableState, Wrap,
     },
     Frame,
 };
-use std::io::{self, Write};
+use std::io::Write;
 use std::process::{Command, Stdio};
 
 use super::highlight::{parse_code_blocks, CodeBlockInfo, Highlighter};
@@ -19,34 +18,29 @@ use super::state::{DialogAction, UiState, View};
 use crate::actions;
 use crate::session::{get_session_preview, load_session_messages, load_session_metadata};
 
-fn format_tokens(tokens: usize) -> String {
-    if tokens >= 1_000_000 {
-        format!("{:.1}M", tokens as f64 / 1_000_000.0)
-    } else if tokens >= 1_000 {
-        format!("{:.1}K", tokens as f64 / 1_000.0)
-    } else {
-        tokens.to_string()
-    }
-}
-
-/// Decode project path from Claude's directory encoding
-/// e.g., "-home-pknull-dotfiles" -> "/home/pknull/dotfiles"
-fn decode_project_path(raw_name: &str) -> String {
-    let path = raw_name.strip_prefix('-').unwrap_or(raw_name);
-    format!("/{}", path.replace('-', "/"))
-}
+use crate::utils::format_tokens;
 
 fn copy_to_clipboard(text: &str) -> bool {
-    // Try xclip first (X11), then xsel, then wl-copy (Wayland)
-    let commands = [
-        ("xclip", vec!["-selection", "clipboard"]),
-        ("xsel", vec!["--clipboard", "--input"]),
-        ("wl-copy", vec![]),
+    // Platform-specific clipboard commands
+    #[cfg(target_os = "macos")]
+    let commands: &[(&str, &[&str])] = &[("pbcopy", &[])];
+
+    #[cfg(target_os = "linux")]
+    let commands: &[(&str, &[&str])] = &[
+        ("xclip", &["-selection", "clipboard"]),
+        ("xsel", &["--clipboard", "--input"]),
+        ("wl-copy", &[]),
     ];
 
-    for (cmd, args) in &commands {
+    #[cfg(target_os = "windows")]
+    let commands: &[(&str, &[&str])] = &[("clip", &[])];
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    let commands: &[(&str, &[&str])] = &[];
+
+    for (cmd, args) in commands {
         if let Ok(mut child) = Command::new(cmd)
-            .args(args)
+            .args(*args)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -55,7 +49,8 @@ fn copy_to_clipboard(text: &str) -> bool {
             if let Some(mut stdin) = child.stdin.take() {
                 if stdin.write_all(text.as_bytes()).is_ok() {
                     drop(stdin); // Close stdin so clipboard tool knows we're done
-                    return true; // Don't wait - clipboard tool runs in background
+                                 // Wait for child with a short timeout to confirm success
+                    return child.wait().map(|status| status.success()).unwrap_or(false);
                 }
             }
         }
@@ -129,14 +124,6 @@ impl App {
         Ok(())
     }
 
-    fn load_all_metadata_sync(&mut self) {
-        for session in self.state.sessions.iter_mut() {
-            if session.first_message.is_none() {
-                let _ = load_session_metadata(session);
-            }
-        }
-    }
-
     fn handle_events(&mut self) -> Result<()> {
         if event::poll(std::time::Duration::from_millis(100))? {
             match event::read()? {
@@ -167,32 +154,28 @@ impl App {
 
     fn handle_mouse(&mut self, kind: MouseEventKind) {
         match kind {
-            MouseEventKind::ScrollUp => {
-                match self.state.view {
-                    View::List => {
-                        self.state.cursor_up();
-                        self.table_state.select(Some(self.state.cursor));
-                    }
-                    View::Preview => {
-                        self.state.preview_scroll = self.state.preview_scroll.saturating_sub(3);
-                    }
-                    _ => {}
+            MouseEventKind::ScrollUp => match self.state.view {
+                View::List => {
+                    self.state.cursor_up();
+                    self.table_state.select(Some(self.state.cursor));
                 }
-            }
-            MouseEventKind::ScrollDown => {
-                match self.state.view {
-                    View::List => {
-                        self.state.cursor_down();
-                        self.table_state.select(Some(self.state.cursor));
-                    }
-                    View::Preview => {
-                        if self.state.preview_scroll + 3 < self.state.preview_lines.len() {
-                            self.state.preview_scroll += 3;
-                        }
-                    }
-                    _ => {}
+                View::Preview => {
+                    self.state.preview_scroll = self.state.preview_scroll.saturating_sub(3);
                 }
-            }
+                _ => {}
+            },
+            MouseEventKind::ScrollDown => match self.state.view {
+                View::List => {
+                    self.state.cursor_down();
+                    self.table_state.select(Some(self.state.cursor));
+                }
+                View::Preview => {
+                    if self.state.preview_scroll + 3 < self.state.preview_lines.len() {
+                        self.state.preview_scroll += 3;
+                    }
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -281,12 +264,15 @@ impl App {
             }
             KeyCode::Char('y') => {
                 if let Some(session) = self.state.get_current_session() {
-                    let project_dir = decode_project_path(&session.project_raw);
-                    let cmd = format!("cd {} && claude --resume {}", project_dir, session.id);
+                    let cmd = format!(
+                        "cd {} && claude --resume {}",
+                        session.project_path, session.id
+                    );
                     if copy_to_clipboard(&cmd) {
                         self.state.set_status(format!("Copied: {}", cmd));
                     } else {
-                        self.state.set_status("Failed to copy (xclip not found?)".to_string());
+                        self.state
+                            .set_status("Failed to copy (clipboard tool not found?)".to_string());
                     }
                 }
             }
@@ -296,7 +282,8 @@ impl App {
                     if copy_to_clipboard(&path) {
                         self.state.set_status(format!("Copied path: {}", path));
                     } else {
-                        self.state.set_status("Failed to copy (xclip not found?)".to_string());
+                        self.state
+                            .set_status("Failed to copy (xclip not found?)".to_string());
                     }
                 }
             }
@@ -330,6 +317,7 @@ impl App {
         match code {
             KeyCode::Char('q') | KeyCode::Esc => {
                 self.state.clear_preview_search();
+                self.state.clear_section_selection();
                 self.state.view = View::List;
                 self.state.preview_lines.clear();
             }
@@ -362,6 +350,58 @@ impl App {
             }
             KeyCode::Char('N') => {
                 self.state.prev_preview_match();
+            }
+            // Section navigation
+            KeyCode::Char('[') => {
+                self.state.prev_section();
+            }
+            KeyCode::Char(']') => {
+                self.state.next_section();
+            }
+            // Toggle section selection
+            KeyCode::Char(' ') => {
+                self.state.toggle_section_selection();
+                self.state.next_section();
+            }
+            // Clear section selection
+            KeyCode::Char('A') => {
+                self.state.clear_section_selection();
+                self.state.set_status("Selection cleared".to_string());
+            }
+            // Copy selected sections or current section
+            KeyCode::Char('c') => {
+                // If sections are selected, copy those; otherwise copy current
+                if let Some(content) = self.state.get_selected_sections_content() {
+                    let count = self.state.preview_selected_sections.len();
+                    if copy_to_clipboard(&content) {
+                        self.state
+                            .set_status(format!("Copied {} section(s) to clipboard", count));
+                        self.state.clear_section_selection();
+                    } else {
+                        self.state
+                            .set_status("Failed to copy (clipboard tool not found?)".to_string());
+                    }
+                } else if let Some(content) = self.state.get_current_section_content() {
+                    if copy_to_clipboard(&content) {
+                        let section_idx = self.state.current_section_index().unwrap_or(0) + 1;
+                        self.state
+                            .set_status(format!("Copied section {} to clipboard", section_idx));
+                    } else {
+                        self.state
+                            .set_status("Failed to copy (clipboard tool not found?)".to_string());
+                    }
+                }
+            }
+            // Copy entire preview
+            KeyCode::Char('C') => {
+                let content = self.state.get_full_preview_content();
+                if copy_to_clipboard(&content) {
+                    self.state
+                        .set_status("Copied entire session to clipboard".to_string());
+                } else {
+                    self.state
+                        .set_status("Failed to copy (clipboard tool not found?)".to_string());
+                }
             }
             _ => {}
         }
@@ -436,11 +476,8 @@ impl App {
                                 crate::session::MessageRole::Assistant => "[Assistant]",
                                 crate::session::MessageRole::System => "[System]",
                             };
-                            let header = format!(
-                                "{} {}",
-                                role,
-                                msg.timestamp.format("%Y-%m-%d %H:%M:%S")
-                            );
+                            let header =
+                                format!("{} {}", role, msg.timestamp.format("%Y-%m-%d %H:%M:%S"));
                             let mut lines = vec![header, String::new()];
                             lines.extend(msg.content.lines().map(String::from));
                             lines.push(String::new());
@@ -489,10 +526,7 @@ impl App {
             DialogAction::DeleteSelected => {
                 let to_delete: std::collections::HashSet<usize> = if self.state.selected.is_empty()
                 {
-                    self.state
-                        .current_session_index()
-                        .into_iter()
-                        .collect()
+                    self.state.current_session_index().into_iter().collect()
                 } else {
                     self.state.selected.clone()
                 };
@@ -508,7 +542,8 @@ impl App {
                 }
 
                 self.state.remove_sessions(&to_delete);
-                self.state.set_status(format!("Deleted {} session(s)", count));
+                self.state
+                    .set_status(format!("Deleted {} session(s)", count));
             }
             DialogAction::DeleteOlderThan(days) => {
                 use chrono::Utc;
@@ -536,14 +571,10 @@ impl App {
                 }
 
                 self.state.remove_sessions(&to_delete);
-                self.state
-                    .set_status(format!("Deleted {} session(s) older than {} days", count, days));
-            }
-            DialogAction::ArchiveSelected => {
-                // Handled in do_archive
-            }
-            DialogAction::ExportSelected => {
-                // Handled in do_export
+                self.state.set_status(format!(
+                    "Deleted {} session(s) older than {} days",
+                    count, days
+                ));
             }
         }
     }
@@ -625,14 +656,18 @@ impl App {
                             let area = f.size();
                             let msg = format!("Refreshing... {}/{}", i + 1, total);
                             let paragraph = ratatui::widgets::Paragraph::new(msg)
-                                .style(ratatui::style::Style::default().fg(ratatui::style::Color::Cyan))
+                                .style(
+                                    ratatui::style::Style::default()
+                                        .fg(ratatui::style::Color::Cyan),
+                                )
                                 .alignment(ratatui::layout::Alignment::Center);
                             f.render_widget(paragraph, area);
                         })?;
                     }
                 }
 
-                self.state.set_status(format!("Refreshed: {} sessions", total));
+                self.state
+                    .set_status(format!("Refreshed: {} sessions", total));
             }
             Err(e) => {
                 self.state.set_status(format!("Refresh failed: {}", e));
@@ -668,6 +703,10 @@ impl App {
             ])
             .split(area);
 
+        // Update state with actual visible height (table area minus header row)
+        self.state
+            .set_visible_height(chunks[1].height.saturating_sub(2) as usize);
+
         // Filter bar
         self.draw_header(f, chunks[0]);
 
@@ -688,7 +727,11 @@ impl App {
         };
 
         let project_text = format!("[{}]", self.state.current_project_filter());
-        let sort_arrow = if self.state.sort_reversed { "↑" } else { "↓" };
+        let sort_arrow = if self.state.sort_reversed {
+            "↑"
+        } else {
+            "↓"
+        };
         let sort_text = format!("[{}{}]", self.state.sort_field.as_str(), sort_arrow);
 
         let filter_line = Line::from(vec![
@@ -728,7 +771,7 @@ impl App {
                 let size = humansize::format_size(session.size_bytes, humansize::BINARY);
                 let tokens = session
                     .token_count
-                    .map(|t| format_tokens(t))
+                    .map(format_tokens)
                     .unwrap_or_else(|| "-".to_string());
                 let preview = get_session_preview(session);
 
@@ -773,17 +816,17 @@ impl App {
     fn draw_footer(&self, f: &mut Frame, area: Rect) {
         // Single line: status message OR keybinds hint
         let content = if let Some(ref msg) = self.state.status_message {
-            Line::from(Span::styled(msg.as_str(), Style::default().fg(Color::Green)))
+            Line::from(Span::styled(
+                msg.as_str(),
+                Style::default().fg(Color::Green),
+            ))
         } else if !self.state.selected.is_empty() {
             Line::from(Span::styled(
                 format!("{} selected", self.state.selected.len()),
                 Style::default().fg(Color::Yellow),
             ))
         } else {
-            Line::from(Span::styled(
-                "?:help",
-                Style::default().fg(Color::DarkGray),
-            ))
+            Line::from(Span::styled("?:help", Style::default().fg(Color::DarkGray)))
         };
         f.render_widget(Paragraph::new(content), area);
     }
@@ -791,7 +834,11 @@ impl App {
     fn draw_preview_view(&mut self, f: &mut Frame, area: Rect) {
         let has_search = !self.state.preview_search.is_empty() || self.state.preview_search_active;
         let constraints = if has_search {
-            vec![Constraint::Length(1), Constraint::Min(5), Constraint::Length(1)]
+            vec![
+                Constraint::Length(1),
+                Constraint::Min(5),
+                Constraint::Length(1),
+            ]
         } else {
             vec![Constraint::Min(5), Constraint::Length(1)]
         };
@@ -807,7 +854,11 @@ impl App {
                 format!("Search: [{}▏]", self.state.preview_search)
             } else {
                 let match_info = if !self.state.preview_matches.is_empty() {
-                    format!(" ({}/{})", self.state.preview_match_index + 1, self.state.preview_matches.len())
+                    format!(
+                        " ({}/{})",
+                        self.state.preview_match_index + 1,
+                        self.state.preview_matches.len()
+                    )
                 } else if !self.state.preview_search.is_empty() {
                     " (no matches)".to_string()
                 } else {
@@ -815,8 +866,7 @@ impl App {
                 };
                 format!("Search: [{}]{}", self.state.preview_search, match_info)
             };
-            let search_bar = Paragraph::new(search_text)
-                .style(Style::default().fg(Color::Yellow));
+            let search_bar = Paragraph::new(search_text).style(Style::default().fg(Color::Yellow));
             f.render_widget(search_bar, chunks[0]);
             (chunks[1], chunks[2])
         } else {
@@ -843,11 +893,12 @@ impl App {
             .take(content_area.height as usize)
             .map(|(idx, line)| {
                 let is_match = self.state.preview_matches.contains(&idx);
+                let is_selected = self.state.is_line_in_selected_section(idx);
 
                 // Check if this line is in a code block
-                let in_code_block = code_blocks.iter().any(|block| {
-                    idx >= block.start && idx < block.end
-                });
+                let in_code_block = code_blocks
+                    .iter()
+                    .any(|block| idx >= block.start && idx < block.end);
                 let is_code_fence = line.starts_with("```");
                 let code_block_lang = if is_code_fence && line.len() > 3 {
                     Some(line.trim_start_matches('`').trim())
@@ -859,17 +910,23 @@ impl App {
                 let (content, base_style) = if line.starts_with("[User]") {
                     (
                         wrap_line(line, wrap_width),
-                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
                     )
                 } else if line.starts_with("[Assistant]") {
                     (
                         wrap_line(line, wrap_width),
-                        Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Blue)
+                            .add_modifier(Modifier::BOLD),
                     )
                 } else if line.starts_with("[System]") {
                     (
                         wrap_line(line, wrap_width),
-                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
                     )
                 } else if is_code_fence {
                     // Style code fence markers
@@ -877,7 +934,12 @@ impl App {
                     (
                         vec![Line::from(vec![
                             Span::styled("```", Style::default().fg(Color::Magenta)),
-                            Span::styled(lang_display.to_string(), Style::default().fg(Color::Cyan).add_modifier(Modifier::ITALIC)),
+                            Span::styled(
+                                lang_display.to_string(),
+                                Style::default()
+                                    .fg(Color::Cyan)
+                                    .add_modifier(Modifier::ITALIC),
+                            ),
                         ])],
                         Style::default(),
                     )
@@ -887,29 +949,51 @@ impl App {
                     if let Some(block) = block {
                         let highlighted = self.highlighter.highlight_code(line, &block.language);
                         if let Some(first_line) = highlighted.into_iter().next() {
-                            (vec![first_line], Style::default().bg(Color::Rgb(30, 30, 46)))
+                            (
+                                vec![first_line],
+                                Style::default().bg(Color::Rgb(30, 30, 46)),
+                            )
                         } else {
-                            (vec![Line::from(line.as_str())], Style::default().bg(Color::Rgb(30, 30, 46)))
+                            (
+                                vec![Line::from(line.as_str())],
+                                Style::default().bg(Color::Rgb(30, 30, 46)),
+                            )
                         }
                     } else {
-                        (vec![Line::from(line.as_str())], Style::default().bg(Color::Rgb(30, 30, 46)))
+                        (
+                            vec![Line::from(line.as_str())],
+                            Style::default().bg(Color::Rgb(30, 30, 46)),
+                        )
                     }
                 } else if line.starts_with("🔧") {
                     // Tool use - wrap
-                    (wrap_line(line, wrap_width), Style::default().fg(Color::Cyan))
+                    (
+                        wrap_line(line, wrap_width),
+                        Style::default().fg(Color::Cyan),
+                    )
                 } else if line.starts_with("💭") {
                     // Thinking - wrap
-                    (wrap_line(line, wrap_width), Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC))
+                    (
+                        wrap_line(line, wrap_width),
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::ITALIC),
+                    )
                 } else if line.starts_with("📋") {
                     // Tool result - wrap
-                    (wrap_line(line, wrap_width), Style::default().fg(Color::Gray))
+                    (
+                        wrap_line(line, wrap_width),
+                        Style::default().fg(Color::Gray),
+                    )
                 } else {
                     (wrap_line(line, wrap_width), Style::default())
                 };
 
-                // Highlight matched lines
+                // Highlight matched lines and selected sections
                 let final_style = if is_match {
                     base_style.bg(Color::DarkGray)
+                } else if is_selected {
+                    base_style.bg(Color::Rgb(50, 50, 80))
                 } else {
                     base_style
                 };
@@ -922,17 +1006,39 @@ impl App {
 
         f.render_widget(list, content_area);
 
-        // Footer
-        let footer = Line::from(vec![
-            Span::styled("j/k", Style::default().fg(Color::Cyan)),
-            Span::raw(":Scroll "),
-            Span::styled("/", Style::default().fg(Color::Cyan)),
-            Span::raw(":Search "),
-            Span::styled("n/N", Style::default().fg(Color::Cyan)),
-            Span::raw(":Next/Prev "),
-            Span::styled("q", Style::default().fg(Color::Cyan)),
-            Span::raw(":Back"),
-        ]);
+        // Footer - show selection count or status message or keybinds
+        let footer = if let Some(ref msg) = self.state.status_message {
+            Line::from(Span::styled(
+                msg.as_str(),
+                Style::default().fg(Color::Green),
+            ))
+        } else if !self.state.preview_selected_sections.is_empty() {
+            Line::from(vec![
+                Span::styled(
+                    format!("{} selected ", self.state.preview_selected_sections.len()),
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::styled("Space", Style::default().fg(Color::Cyan)),
+                Span::raw(":Toggle "),
+                Span::styled("c", Style::default().fg(Color::Cyan)),
+                Span::raw(":Copy "),
+                Span::styled("A", Style::default().fg(Color::Cyan)),
+                Span::raw(":Clear"),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled("j/k", Style::default().fg(Color::Cyan)),
+                Span::raw(":Scroll "),
+                Span::styled("[/]", Style::default().fg(Color::Cyan)),
+                Span::raw(":Section "),
+                Span::styled("Space", Style::default().fg(Color::Cyan)),
+                Span::raw(":Select "),
+                Span::styled("c", Style::default().fg(Color::Cyan)),
+                Span::raw(":Copy "),
+                Span::styled("q", Style::default().fg(Color::Cyan)),
+                Span::raw(":Back"),
+            ])
+        };
         f.render_widget(Paragraph::new(footer), footer_area);
     }
 
@@ -978,10 +1084,7 @@ impl App {
 
         let popup_area = centered_rect(help_width, help_height, area);
 
-        let help_items: Vec<ListItem> = help_text
-            .iter()
-            .map(|line| ListItem::new(*line))
-            .collect();
+        let help_items: Vec<ListItem> = help_text.iter().map(|line| ListItem::new(*line)).collect();
 
         let help = List::new(help_items)
             .block(
@@ -997,11 +1100,7 @@ impl App {
     }
 
     fn draw_confirm_dialog(&self, f: &mut Frame, area: Rect) {
-        let msg = self
-            .state
-            .dialog_message
-            .as_deref()
-            .unwrap_or("Confirm?");
+        let msg = self.state.dialog_message.as_deref().unwrap_or("Confirm?");
 
         let popup_area = centered_rect(50, 5, area);
 

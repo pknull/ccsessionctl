@@ -17,8 +17,6 @@ pub enum View {
 pub enum DialogAction {
     DeleteSelected,
     DeleteOlderThan(u32),
-    ArchiveSelected,
-    ExportSelected,
 }
 
 /// Sort field options
@@ -75,6 +73,7 @@ pub struct UiState {
     pub preview_search_active: bool,
     pub preview_matches: Vec<usize>,
     pub preview_match_index: usize,
+    pub preview_selected_sections: HashSet<usize>,
     pub dialog_message: Option<String>,
     pub dialog_action: Option<DialogAction>,
     pub status_message: Option<String>,
@@ -104,6 +103,7 @@ impl UiState {
             preview_search_active: false,
             preview_matches: Vec::new(),
             preview_match_index: 0,
+            preview_selected_sections: HashSet::new(),
             dialog_message: None,
             dialog_action: None,
             status_message: None,
@@ -269,7 +269,8 @@ impl UiState {
                             session.id,
                             session.summary.as_deref().unwrap_or(""),
                             session.first_message.as_deref().unwrap_or("")
-                        ).to_lowercase();
+                        )
+                        .to_lowercase();
                         search_text.contains(&query_lower)
                     };
                     if !matches {
@@ -315,14 +316,22 @@ impl UiState {
     pub fn cycle_sort_field(&mut self) {
         self.sort_field = self.sort_field.next();
         self.apply_sort();
-        self.set_status(format!("Sort: {} {}", self.sort_field.as_str(), if self.sort_reversed { "↑" } else { "↓" }));
+        self.set_status(format!(
+            "Sort: {} {}",
+            self.sort_field.as_str(),
+            if self.sort_reversed { "↑" } else { "↓" }
+        ));
     }
 
     /// Toggle sort direction
     pub fn toggle_sort_direction(&mut self) {
         self.sort_reversed = !self.sort_reversed;
         self.apply_sort();
-        self.set_status(format!("Sort: {} {}", self.sort_field.as_str(), if self.sort_reversed { "↑" } else { "↓" }));
+        self.set_status(format!(
+            "Sort: {} {}",
+            self.sort_field.as_str(),
+            if self.sort_reversed { "↑" } else { "↓" }
+        ));
     }
 
     /// Apply current sort to filtered indices
@@ -337,16 +346,24 @@ impl UiState {
                 SortField::Size => sessions[b].size_bytes.cmp(&sessions[a].size_bytes),
                 SortField::Project => sessions[a].project.cmp(&sessions[b].project),
                 SortField::Name => {
-                    let name_a = sessions[a].summary.as_deref()
+                    let name_a = sessions[a]
+                        .summary
+                        .as_deref()
                         .or(sessions[a].first_message.as_deref())
                         .unwrap_or("");
-                    let name_b = sessions[b].summary.as_deref()
+                    let name_b = sessions[b]
+                        .summary
+                        .as_deref()
                         .or(sessions[b].first_message.as_deref())
                         .unwrap_or("");
                     name_a.cmp(name_b)
                 }
             };
-            if reversed { cmp.reverse() } else { cmp }
+            if reversed {
+                cmp.reverse()
+            } else {
+                cmp
+            }
         });
 
         // Reset cursor if out of bounds
@@ -452,5 +469,221 @@ impl UiState {
         self.preview_search_active = false;
         self.preview_matches.clear();
         self.preview_match_index = 0;
+    }
+
+    /// Find section boundaries in preview lines (sections start with [User], [Assistant], [System])
+    pub fn get_section_boundaries(&self) -> Vec<usize> {
+        self.preview_lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| {
+                line.starts_with("[User]")
+                    || line.starts_with("[Assistant]")
+                    || line.starts_with("[System]")
+            })
+            .map(|(idx, _)| idx)
+            .collect()
+    }
+
+    /// Get the current section index based on scroll position
+    pub fn current_section_index(&self) -> Option<usize> {
+        let boundaries = self.get_section_boundaries();
+        if boundaries.is_empty() {
+            return None;
+        }
+        // Find which section the scroll position is in
+        for (i, &start) in boundaries.iter().enumerate().rev() {
+            if self.preview_scroll >= start {
+                return Some(i);
+            }
+        }
+        Some(0)
+    }
+
+    /// Jump to previous section
+    pub fn prev_section(&mut self) {
+        let boundaries = self.get_section_boundaries();
+        if boundaries.is_empty() {
+            return;
+        }
+        // Find current section and go to previous
+        for &start in boundaries.iter().rev() {
+            if start < self.preview_scroll {
+                self.preview_scroll = start;
+                return;
+            }
+        }
+        // Already at first section, stay there
+        if let Some(&first) = boundaries.first() {
+            self.preview_scroll = first;
+        }
+    }
+
+    /// Jump to next section
+    pub fn next_section(&mut self) {
+        let boundaries = self.get_section_boundaries();
+        if boundaries.is_empty() {
+            return;
+        }
+        // Find next section after current scroll
+        for &start in &boundaries {
+            if start > self.preview_scroll {
+                self.preview_scroll = start;
+                return;
+            }
+        }
+        // At last section, stay there
+    }
+
+    /// Get the content of the current section (for copying)
+    pub fn get_current_section_content(&self) -> Option<String> {
+        let boundaries = self.get_section_boundaries();
+        if boundaries.is_empty() {
+            return None;
+        }
+
+        // Find which section we're in
+        let mut section_start = 0;
+        let mut section_idx = 0;
+        for (i, &start) in boundaries.iter().enumerate() {
+            if self.preview_scroll >= start {
+                section_start = start;
+                section_idx = i;
+            } else {
+                break;
+            }
+        }
+
+        // Find section end
+        let section_end = boundaries
+            .get(section_idx + 1)
+            .copied()
+            .unwrap_or(self.preview_lines.len());
+
+        // Collect lines, trimming trailing empty lines
+        let lines: Vec<&str> = self.preview_lines[section_start..section_end]
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+
+        // Trim trailing empty lines
+        let trimmed: Vec<&str> = lines
+            .iter()
+            .rev()
+            .skip_while(|l| l.is_empty())
+            .copied()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.join("\n"))
+        }
+    }
+
+    /// Get the entire preview content (for copying)
+    pub fn get_full_preview_content(&self) -> String {
+        self.preview_lines.join("\n")
+    }
+
+    /// Toggle selection on current section
+    pub fn toggle_section_selection(&mut self) {
+        if let Some(idx) = self.current_section_index() {
+            if self.preview_selected_sections.contains(&idx) {
+                self.preview_selected_sections.remove(&idx);
+            } else {
+                self.preview_selected_sections.insert(idx);
+            }
+        }
+    }
+
+    /// Clear section selection
+    pub fn clear_section_selection(&mut self) {
+        self.preview_selected_sections.clear();
+    }
+
+    /// Check if a line is in a selected section
+    pub fn is_line_in_selected_section(&self, line_idx: usize) -> bool {
+        let boundaries = self.get_section_boundaries();
+        if boundaries.is_empty() {
+            return false;
+        }
+
+        // Find which section this line belongs to
+        let mut section_idx = 0;
+        for (i, &start) in boundaries.iter().enumerate() {
+            if line_idx >= start {
+                section_idx = i;
+            } else {
+                break;
+            }
+        }
+
+        self.preview_selected_sections.contains(&section_idx)
+    }
+
+    /// Get content of selected sections (for copying)
+    /// Returns None if no sections selected
+    pub fn get_selected_sections_content(&self) -> Option<String> {
+        if self.preview_selected_sections.is_empty() {
+            return None;
+        }
+
+        let boundaries = self.get_section_boundaries();
+        if boundaries.is_empty() {
+            return None;
+        }
+
+        let mut sections: Vec<(usize, String)> = Vec::new();
+
+        for &section_idx in &self.preview_selected_sections {
+            if section_idx >= boundaries.len() {
+                continue;
+            }
+
+            let section_start = boundaries[section_idx];
+            let section_end = boundaries
+                .get(section_idx + 1)
+                .copied()
+                .unwrap_or(self.preview_lines.len());
+
+            // Collect lines, trimming trailing empty lines
+            let lines: Vec<&str> = self.preview_lines[section_start..section_end]
+                .iter()
+                .map(|s| s.as_str())
+                .collect();
+
+            let trimmed: Vec<&str> = lines
+                .iter()
+                .rev()
+                .skip_while(|l| l.is_empty())
+                .copied()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+
+            if !trimmed.is_empty() {
+                sections.push((section_idx, trimmed.join("\n")));
+            }
+        }
+
+        if sections.is_empty() {
+            return None;
+        }
+
+        // Sort by section index to maintain order
+        sections.sort_by_key(|(idx, _)| *idx);
+
+        Some(
+            sections
+                .into_iter()
+                .map(|(_, content)| content)
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        )
     }
 }
