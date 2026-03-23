@@ -1,9 +1,9 @@
 {
   "patterns": {
     "sequence:code:reviewer->code:reviewer": {
-      "count": 24,
+      "count": 36,
       "confidence": 0.95
     }
   },
-  "last_updated": "2026-03-22T14:30:10.064663"
+  "last_updated": "2026-03-22T17:23:14.489939"
 }
